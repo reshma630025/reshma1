@@ -4,7 +4,6 @@ Connects all detection modules with real AI models, forensic algorithms, authent
 """
 import sys
 import json
-import time
 from pathlib import Path
 import logging
 from typing import Optional
@@ -25,10 +24,9 @@ from backend.detectors.audio_detector import (
     analyze_audio_bytes, load_models as load_audio_models,
     TRAINED_AUDIO_MODEL
 )
-from backend.detectors.text_detector import analyze_text, load_sms_model
+from backend.detectors.text_detector import analyze_text
 from backend.detectors.job_detector import analyze_job_or_internship
-from backend.detectors.url_detector import analyze_url, load_url_model
-from backend.detectors.email_detector import analyze_email, load_email_model
+from backend.detectors.url_detector import analyze_url
 from backend.detectors.ocr_detector import analyze_ocr_text
 from backend.detectors.company_detector import verify_company
 from backend.detectors.social_detector import analyze_social_post
@@ -71,18 +69,6 @@ def startup_event():
         load_audio_models()
     except Exception as e:
         logger.warning(f"Audio model preloader notice: {e}")
-    try:
-        load_url_model()
-    except Exception as e:
-        logger.warning(f"URL model preloader notice: {e}")
-    try:
-        load_sms_model()
-    except Exception as e:
-        logger.warning(f"SMS model preloader notice: {e}")
-    try:
-        load_email_model()
-    except Exception as e:
-        logger.warning(f"Email model preloader notice: {e}")
     logger.info("TrustGuard AI models initialized.")
 
 
@@ -306,11 +292,6 @@ def get_health():
 def get_status():
     img_ready = IMAGE_TRAINED_MODEL.exists()
     aud_ready = TRAINED_AUDIO_MODEL.exists()
-    url_ready = (PROJECT_ROOT / "models" / "url" / "best_model.pt").exists()
-    sms_ready = (PROJECT_ROOT / "models" / "sms" / "best_model.pt").exists()
-    email_ready = (PROJECT_ROOT / "models" / "email" / "best_model.pt").exists()
-    social_ready = (PROJECT_ROOT / "models" / "social" / "best_model.pt").exists()
-
     return {
         "status": "online",
         "engine": "Real Pretrained & Multi-Signal Models",
@@ -320,26 +301,14 @@ def get_status():
         "videoModelReady": img_ready,
         "videoModelLoaded": img_ready,
         "audioModel": "AudioCNN (Trained on ASVspoof 2019 LA)" if aud_ready else "STFT Spectral Forensics",
-        "audioModelReady": aud_ready,
+        "audioModelReady": aud_ready or True,
         "audioModelLoaded": aud_ready,
-        "urlModel": "PhishingURLNet (Trained on 579,920 URLs, 98.1% Acc)" if url_ready else "Domain Structure Forensics",
-        "urlModelReady": url_ready,
-        "urlModelLoaded": url_ready,
-        "textModel": "SMSScamClassifier (Trained on SMS Spam Collection, 98.9% Acc)" if sms_ready else "Multilingual Heuristic Engine",
-        "textModelReady": sms_ready,
-        "textModelLoaded": sms_ready,
-        "smsModel": "SMSScamClassifier (Trained on SMS Spam Collection, 98.9% Acc)" if sms_ready else "Multilingual Heuristic Engine",
-        "smsModelReady": sms_ready,
-        "smsModelLoaded": sms_ready,
-        "emailModel": "EmailPhishingClassifier (Trained on 82,486 Emails, 98.7% Acc)" if email_ready else "Header & Pattern Forensics",
-        "emailModelReady": email_ready,
-        "emailModelLoaded": email_ready,
-        "socialModel": "SocialSpamNet (Trained on Instagram Benchmark, 90.8% Acc)" if social_ready else "Profile Telemetry Rules",
-        "socialModelReady": social_ready,
-        "socialModelLoaded": social_ready,
+        "textModelReady": True,
         "jobModelReady": True,
+        "urlModelReady": True,
         "ocrModelReady": True,
         "companyModelReady": True,
+        "socialModelReady": True,
         "multimodalReady": True,
         "assistantReady": True,
         "reportsReady": True
@@ -628,44 +597,6 @@ async def analyze_text_endpoint(request: Request):
 
 
 # ============================================================
-# 4b. EMAIL PHISHING DETECTION
-# ============================================================
-
-@app.post("/api/analyze/email")
-async def analyze_email_endpoint(request: Request):
-    data = await extract_request_data(request)
-    body = data.get("body", "") or data.get("content", "") or data.get("text", "") or data.get("message", "")
-    subject = data.get("subject", "")
-    sender = data.get("sender", "") or data.get("from", "")
-    user = extract_user_from_request(request)
-    u_id = user["id"] if user else 1
-
-    if not body and not subject:
-        raise HTTPException(status_code=400, detail="No email content provided. Send 'body' or 'content' in request.")
-
-    try:
-        result = analyze_email(content=str(body), subject=str(subject), sender=str(sender))
-        if result.get("success"):
-            record_scan(
-                scan_type="email",
-                content_label=(subject or str(body))[:40] + ("..." if len(subject or str(body)) > 40 else ""),
-                classification=result.get("status") or result.get("classification", "LEGITIMATE"),
-                confidence=result.get("confidence_pct", result.get("confidence", 0.0)),
-                risk_score=result.get("risk_score", 0.0),
-                risk_level=result.get("risk_level", "LOW"),
-                trust_score=result.get("trust_score"),
-                trust_category=result.get("trust_category"),
-                user_id=u_id,
-                explanation=result.get("explanation", ""),
-                indicators_json=json.dumps(result.get("indicators", []))
-            )
-        return result
-    except Exception as e:
-        logger.error(f"Error in /api/analyze/email: {e}", exc_info=True)
-        return JSONResponse(status_code=500, content={"success": False, "error": f"Email analysis failed: {str(e)}"})
-
-
-# ============================================================
 # 5. JOB & INTERNSHIP FRAUD DETECTION
 # ============================================================
 
@@ -891,56 +822,28 @@ async def analyze_company_endpoint(request: Request):
 
 
 # ============================================================
-# 9. SOCIAL MEDIA FRAUD & BOT PROFILE DETECTION
+# 9. SOCIAL MEDIA FRAUD DETECTION
 # ============================================================
 
 @app.post("/api/analyze/social")
-async def analyze_social_endpoint(request: Request, file: Optional[UploadFile] = File(None)):
+async def analyze_social_endpoint(request: Request):
     data = await extract_request_data(request)
+    post_text = data.get("content", "") or data.get("text", "") or data.get("post", "")
+    post_url = data.get("url", "") or data.get("link", "")
+    platform = data.get("platform", "General")
     user = extract_user_from_request(request)
     u_id = user["id"] if user else 1
 
-    # Check if a file (CSV/JSON) was uploaded
-    if file:
-        try:
-            content = await file.read()
-            fname = (file.filename or "").lower()
-            if fname.endswith(".csv"):
-                import io
-                import pandas as pd
-                df = pd.read_csv(io.BytesIO(content))
-                if len(df) > 0:
-                    data.update(df.iloc[0].to_dict())
-                data["source_file"] = file.filename
-            elif fname.endswith(".json"):
-                data.update(json.loads(content.decode("utf-8")))
-                data["source_file"] = file.filename
-        except Exception as fe:
-            logger.warning(f"Error parsing social file: {fe}")
-
-    # Determine if profile tabular features are present
-    has_profile_features = any(k in data for k in [
-        'username', 'handle', 'followers', 'followers_count', 'following', 'following_count',
-        '#followers', '#follows', 'profile pic', 'profile_picture', 'nums/length username', 'posts', '#posts'
-    ])
+    if not post_text and not post_url:
+        raise HTTPException(status_code=400, detail="No social media text or URL provided.")
 
     try:
-        if has_profile_features:
-            from backend.detectors.social_detector import analyze_social_profile
-            result = analyze_social_profile(data)
-        else:
-            post_text = data.get("content", "") or data.get("text", "") or data.get("post", "")
-            post_url = data.get("url", "") or data.get("link", "")
-            if not post_text and not post_url:
-                raise HTTPException(status_code=400, detail="No profile details, text, or file provided.")
-            result = analyze_social_post(str(post_text), str(post_url))
-
+        result = analyze_social_post(str(post_text), str(post_url))
         if result.get("success"):
-            label = data.get("username") or data.get("handle") or data.get("source_file") or (str(data.get("content", ""))[:30]) or "Social Profile"
             record_scan(
                 scan_type="social",
-                content_label=str(label),
-                classification=result.get("classification") or result.get("status", "GENUINE"),
+                content_label=str(post_text)[:40] if post_text else f"{platform} Post",
+                classification=result.get("classification", "LOW RISK SOCIAL CONTENT"),
                 confidence=result.get("confidence_pct", 0.0),
                 risk_score=result.get("risk_score", 0.0),
                 risk_level=result.get("risk_level", "LOW"),
@@ -949,267 +852,9 @@ async def analyze_social_endpoint(request: Request, file: Optional[UploadFile] =
                 indicators_json=json.dumps(result.get("indicators", []))
             )
         return result
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error in /api/analyze/social: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": f"Social media analysis failed: {str(e)}"})
-
-
-# ============================================================
-# 9b. DATASET SAMPLE VERIFICATION & EVALUATOR DEMO API
-# ============================================================
-
-DATASET_SAMPLES_CATALOG = {
-    "image": {
-        "real": {
-            "path": r"C:\Users\paruc\Downloads\archive\1000_videos\test\real\067_16.png",
-            "name": "067_16.png",
-            "dataset": "1000 Videos Deepfake Video Frames (test/real)",
-            "expected_label": "REAL",
-            "description": "Authentic video frame without facial synthesis or warping artifacts."
-        },
-        "fake": {
-            "path": r"C:\Users\paruc\Downloads\archive\1000_videos\test\fake\067_025_1.png",
-            "name": "067_025_1.png",
-            "dataset": "1000 Videos Deepfake Video Frames (test/fake)",
-            "expected_label": "AI-GENERATED / FAKE",
-            "description": "Manipulated face frame exhibiting deepfake synthesis boundaries."
-        }
-    },
-    "audio": {
-        "real": {
-            "path": r"C:\Users\paruc\Downloads\archive (1)\LA\LA\ASVspoof2019_LA_dev\flac\LA_D_1047731.flac",
-            "name": "LA_D_1047731.flac",
-            "dataset": "ASVspoof 2019 Logical Access (dev/flac)",
-            "expected_label": "REAL / AUTHENTIC",
-            "description": "Authentic human vocal harmonics recorded in studio conditions."
-        },
-        "fake": {
-            "path": r"C:\Users\paruc\Downloads\archive (1)\LA\LA\ASVspoof2019_LA_dev\flac\LA_D_1008730.flac",
-            "name": "LA_D_1008730.flac",
-            "dataset": "ASVspoof 2019 Logical Access (dev/flac)",
-            "expected_label": "AI-GENERATED / SPOOF",
-            "description": "Synthesized vocoder speech exhibiting spectral discontinuities."
-        }
-    },
-    "sms": {
-        "real": {
-            "text": "Go until jurong point, crazy.. Available only in bugis n great world la e buffet... Cine there got amore wat...",
-            "dataset": "SMS Spam Collection (spam_sms.csv)",
-            "expected_label": "REAL / HAM",
-            "description": "Organic conversational text without scam or urgency patterns."
-        },
-        "fake": {
-            "text": "Free entry in 2 a wkly comp to win FA Cup final tkts 21st May 2005. Text FA to 87121 to receive entry question(std txt rate)T&C's apply 08452810075over18's",
-            "dataset": "SMS Spam Collection (spam_sms.csv)",
-            "expected_label": "SPAM / SUSPICIOUS",
-            "description": "Unsolicited premium-rate prize draw scam solicitation."
-        }
-    },
-    "url": {
-        "real": {
-            "url": "http://0123456789nonexistent.com/",
-            "dataset": "Phishing & Malicious URLs Dataset (final_dataset.csv)",
-            "expected_label": "LEGITIMATE",
-            "description": "Standard domain structure with low character entropy."
-        },
-        "fake": {
-            "url": "http://%20%25**)(**@fbrasil.com/old/lqjj0ukuvg1e0h2f/qiye",
-            "dataset": "Phishing & Malicious URLs Dataset (final_dataset.csv)",
-            "expected_label": "PHISHING / SCAM-LIKELY",
-            "description": "Obfuscated host, credential-stealing directory, and high Shannon entropy."
-        }
-    },
-    "email": {
-        "real": {
-            "subject": "HPL Nom - May 25, 2001 File Review",
-            "body": "hpl nom may 25 2001 see attached file hplno 525 xls hplno 525 xls for your records and review.",
-            "sender": "records@enron-corporation.com",
-            "dataset": "Phishing Email Benchmark Collection (phishing_email.csv)",
-            "expected_label": "REAL / LEGITIMATE",
-            "description": "Legitimate corporate correspondence with normal business syntax."
-        },
-        "fake": {
-            "subject": "Urgent: Account Access Suspended - Confirm Credentials",
-            "body": "Dear user, your payment account has been temporarily locked due to unauthorized access attempts. Click on the link below immediately to verify your credentials and wire transfer confirmation.",
-            "sender": "security-notice@paypal-update.top",
-            "dataset": "Phishing Email Benchmark Collection (phishing_email.csv)",
-            "expected_label": "PHISHING / SCAM-LIKELY",
-            "description": "Brand impersonation, high-pressure coercion, and credential harvesting."
-        }
-    },
-    "social": {
-        "real": {
-            "name": "Genuine Profile (@peterkonda / Index 0)",
-            "username": "peterkonda",
-            "full_name": "Peter Konda",
-            "profile pic": 1,
-            "nums/length username": 0.0,
-            "fullname words": 2,
-            "nums/length fullname": 0.0,
-            "name==username": 0,
-            "description length": 44,
-            "external URL": 0,
-            "private": 0,
-            "#posts": 32,
-            "#followers": 1000,
-            "#follows": 955,
-            "followers": 1000,
-            "following": 955,
-            "posts": 32,
-            "has_pic": 1,
-            "bio": "Personal account exploring technology and life",
-            "dataset": "Instagram Fake Spammer Genuine Accounts (archive (14)/test.csv)",
-            "expected_label": "GENUINE",
-            "description": "Balanced follower-to-following ratio with organic activity history."
-        },
-        "fake": {
-            "name": "Spammer Profile (Follower Bot / Index 63)",
-            "username": "official_bg_spambot",
-            "full_name": "official_bg_spambot",
-            "profile pic": 0,
-            "nums/length username": 0.0,
-            "fullname words": 1,
-            "nums/length fullname": 0.0,
-            "name==username": 1,
-            "description length": 0,
-            "external URL": 0,
-            "private": 0,
-            "#posts": 0,
-            "#followers": 69,
-            "#follows": 694,
-            "followers": 69,
-            "following": 694,
-            "posts": 0,
-            "has_pic": 0,
-            "bio": "",
-            "dataset": "Instagram Fake Spammer Genuine Accounts (archive (14)/test.csv)",
-            "expected_label": "FAKE / SPAM",
-            "description": "Original test split sample (Row 63): zero posts, no profile picture, 694 following disparity."
-        }
-    },
-    "job": {
-        "fake": {
-            "title": "Mental health nurse",
-            "company": "Rivera and Sons",
-            "salary": "$5000/week",
-            "email": "david27@gmail.com",
-            "fee": "$150",
-            "description": "Earn $5000/week! Immediate hiring. Contact now at david27@gmail.com. Mandatory registration fee of $150 required for processing equipment and onboarding without screening.",
-            "dataset": "Fake Job Postings Dataset (archive (5)/Fake Postings.csv)",
-            "expected_label": "FRAUDULENT / SCAM",
-            "description": "Advance fee requirement with free commercial webmail recruiter address."
-        }
-    }
-}
-
-@app.get("/api/dataset-samples")
-def get_dataset_samples_catalog():
-    return {
-        "success": True,
-        "catalog": DATASET_SAMPLES_CATALOG
-    }
-
-@app.post("/api/verify/dataset-sample")
-async def verify_dataset_sample_endpoint(request: Request):
-    data = await extract_request_data(request)
-    modality = str(data.get("modality", "")).lower()
-    sample_type = str(data.get("sample_type", "")).lower()
-
-    if sample_type in ["bonafide", "legit", "ham", "genuine"]:
-        sample_type = "real"
-    elif sample_type in ["spoof", "phish", "spam"]:
-        sample_type = "fake"
-
-    if modality not in DATASET_SAMPLES_CATALOG or sample_type not in DATASET_SAMPLES_CATALOG[modality]:
-        raise HTTPException(status_code=400, detail=f"No dataset sample found for modality '{modality}' and type '{sample_type}'.")
-
-    meta = DATASET_SAMPLES_CATALOG[modality][sample_type]
-    user = extract_user_from_request(request)
-    u_id = user["id"] if user else 1
-
-    t0 = time.time()
-
-    # Route through production analysis pipeline
-    if modality == "image":
-        img_path = Path(meta["path"])
-        if not img_path.exists():
-            raise HTTPException(status_code=404, detail=f"Original dataset file missing at {img_path}")
-        content = img_path.read_bytes()
-        res = analyze_image_bytes(content)
-        res["fileName"] = meta["name"]
-    elif modality == "audio":
-        aud_path = Path(meta["path"])
-        if not aud_path.exists():
-            raise HTTPException(status_code=404, detail=f"Original dataset file missing at {aud_path}")
-        content = aud_path.read_bytes()
-        res = analyze_audio_bytes(content)
-        res["fileName"] = meta["name"]
-    elif modality == "sms":
-        res = analyze_text(meta["text"])
-    elif modality == "url":
-        res = analyze_url(meta["url"])
-    elif modality == "email":
-        from backend.detectors.email_detector import analyze_email
-        res = analyze_email(meta["body"], meta["subject"], meta.get("sender", ""))
-    elif modality == "social":
-        from backend.detectors.social_detector import analyze_social_profile
-        res = analyze_social_profile(meta)
-    elif modality == "job":
-        combined_desc = f"{meta.get('title', '')} at {meta.get('company', '')}. Salary: {meta.get('salary', '')}. Upfront fee: {meta.get('fee', '')}. {meta.get('description', '')}"
-        res = analyze_job_or_internship(
-            description=combined_desc,
-            email=meta.get("email", "")
-        )
-    else:
-        raise HTTPException(status_code=400, detail=f"Unsupported verification modality: {modality}")
-
-    proc_time = round(time.time() - t0, 3)
-    pred_label = str(res.get("classification") or res.get("status", "UNKNOWN")).upper()
-    expected = meta["expected_label"].upper()
-
-    # Determine ground truth alignment
-    is_match = False
-    if "REAL" in expected or "AUTHENTIC" in expected or "LEGITIMATE" in expected or "GENUINE" in expected:
-        if any(k in pred_label for k in ["REAL", "AUTHENTIC", "LEGITIMATE", "GENUINE", "LOW RISK"]):
-            is_match = True
-    elif any(k in expected for k in ["FAKE", "SPOOF", "SPAM", "PHISH", "FRAUD", "SCAM"]):
-        if any(k in pred_label for k in ["FAKE", "AI-GENERATED", "SPAM", "SUSPICIOUS", "SCAM-LIKELY", "PHISHING", "CRITICAL", "SCAM"]):
-            is_match = True
-
-    # Record to scan history
-    record_scan(
-        scan_type=modality,
-        content_label=f"Dataset Sample: {meta.get('name') or meta.get('username') or meta.get('text', '')[:30] or meta.get('url', '')}",
-        classification=pred_label,
-        confidence=res.get("confidence_pct", 0.0),
-        risk_score=res.get("risk_score", 0.0),
-        risk_level=res.get("risk_level", "LOW"),
-        user_id=u_id,
-        explanation=f"[Dataset Verification Mode] Evaluated on {meta['dataset']}. {res.get('explanation', '')}",
-        indicators_json=json.dumps(res.get("indicators", []))
-    )
-
-    return {
-        "success": True,
-        "modality": modality,
-        "sample_type": sample_type,
-        "dataset_name": meta["dataset"],
-        "sample_identifier": meta.get("name") or meta.get("username") or meta.get("url") or meta.get("text", "")[:35],
-        "expected_label": meta["expected_label"],
-        "predicted_label": pred_label,
-        "is_match": is_match,
-        "match_status": "✓ MATCH" if is_match else "✗ MISMATCH",
-        "confidence_pct": res.get("confidence_pct", 0.0),
-        "risk_score": res.get("risk_score", 0.0),
-        "risk_level": res.get("risk_level", "LOW"),
-        "model_used": res.get("model_used") or res.get("model", "TrustGuard Engine"),
-        "processing_time": proc_time,
-        "explanation": res.get("explanation", ""),
-        "indicators": res.get("indicators", []),
-        "recommendation": res.get("recommendation", "")
-    }
 
 
 # ============================================================
@@ -1449,41 +1094,6 @@ def get_single_report_endpoint(report_id: str):
     if not rep:
         raise HTTPException(status_code=404, detail=f"Report {report_id} not found.")
     return {"success": True, "report": rep}
-
-
-# Universal Static File & SPA Fallback Handler
-@app.get("/{full_path:path}", include_in_schema=False)
-def serve_static_or_spa(full_path: str):
-    clean_path = full_path.lstrip("/")
-    target = (PROJECT_ROOT / clean_path).resolve()
-    
-    # Check if target is inside PROJECT_ROOT
-    if PROJECT_ROOT.resolve() in target.parents or target == PROJECT_ROOT.resolve():
-        if target.is_file():
-            media_type = None
-            if clean_path.endswith(".html"):
-                media_type = "text/html"
-            elif clean_path.endswith(".css"):
-                media_type = "text/css"
-            elif clean_path.endswith(".js"):
-                media_type = "application/javascript"
-            elif clean_path.endswith(".json"):
-                media_type = "application/json"
-            elif clean_path.endswith(".png"):
-                media_type = "image/png"
-            elif clean_path.endswith(".jpg") or clean_path.endswith(".jpeg"):
-                media_type = "image/jpeg"
-            elif clean_path.endswith(".svg"):
-                media_type = "image/svg+xml"
-            elif clean_path.endswith(".ico"):
-                media_type = "image/x-icon"
-            return FileResponse(str(target), media_type=media_type)
-    
-    # Fallback to SPA index.html
-    index_file = PROJECT_ROOT / "index.html"
-    if index_file.exists():
-        return FileResponse(str(index_file))
-    raise HTTPException(status_code=404, detail="Page not found")
 
 
 if __name__ == "__main__":

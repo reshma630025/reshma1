@@ -105,23 +105,6 @@ class TrustGuardAPI {
     });
   }
 
-  async analyzeSMS(text) {
-    return this.request('/api/analyze/text', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-  }
-
-  async analyzeEmail(emailData) {
-    const payload = typeof emailData === 'string' ? { body: emailData } : emailData;
-    return this.request('/api/analyze/email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-  }
-
   async analyzeJob(jobData) {
     return this.request('/api/analyze/job', {
       method: 'POST',
@@ -251,8 +234,6 @@ window.analyzeImage = (f) => window.tgAPI.analyzeImage(f);
 window.analyzeVideo = (f) => window.tgAPI.analyzeVideo(f);
 window.analyzeAudio = (f) => window.tgAPI.analyzeAudio(f);
 window.analyzeText = (t) => window.tgAPI.analyzeText(t);
-window.analyzeSMS = (s) => window.tgAPI.analyzeSMS(s);
-window.analyzeEmail = (e) => window.tgAPI.analyzeEmail(e);
 window.analyzeJob = (j) => window.tgAPI.analyzeJob(j);
 window.analyzeUrl = (u) => window.tgAPI.analyzeUrl(u);
 window.analyzeOCR = (f, name) => window.tgAPI.analyzeOCR(f, name);

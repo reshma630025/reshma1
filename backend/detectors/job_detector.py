@@ -15,7 +15,7 @@ JOB_FRAUD_PATTERNS = [
     {
         "category": "Advance Fees & Deposits",
         "weight": 40,
-        "regex": r"(?:registration fee|application fee|training fee|security deposit|refundable deposit|laptop fee|processing fee|onboarding fee|buy equipment from our vendor|pay (?:\$|₹|rs|usd)\s*\d+)",
+        "regex": r"(?:(?:registration|application|training|onboarding|upfront|mandatory|equipment|background check)\s*fee|security deposit|refundable deposit|laptop fee|processing fee|buy equipment from our vendor|pay (?:\$|₹|rs|usd)\s*\d+)",
         "label": "Mandatory Upfront Fee / Security Deposit Demand",
         "level": "high"
     },
