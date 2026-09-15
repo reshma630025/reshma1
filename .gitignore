@@ -37,6 +37,7 @@ Desktop.ini
 .DS_Store
 
 # Temporary & Logs
+logs/
 *.log
 *.tmp
 *.temp

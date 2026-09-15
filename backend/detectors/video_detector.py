@@ -60,10 +60,10 @@ def extract_face_or_crop(frame_bgr: np.ndarray) -> np.ndarray:
 def analyze_video_file(
     video_bytes: bytes,
     sample_interval: float = DEFAULT_SAMPLE_INTERVAL,
-    max_frames: int = MAX_ANALYSIS_FRAMES
+    max_frames: int = 16
 ) -> Dict[str, Any]:
     """
-    Saves video bytes to a temporary file, samples frames across duration using OpenCV,
+    Saves video bytes to a temporary file, samples frames deterministically across duration using OpenCV,
     analyzes each frame with the image deepfake detector, and aggregates scores deterministically.
     """
     if not video_bytes or len(video_bytes) < 100:
@@ -83,7 +83,7 @@ def analyze_video_file(
         if not cap.isOpened():
             return {
                 "success": False,
-                "error": "Could not decode uploaded video stream. Please ensure a valid MP4/MOV/WebM file."
+                "error": "Unable to open video with OpenCV. The uploaded file may be unsupported or corrupted."
             }
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -99,15 +99,11 @@ def analyze_video_file(
                 "error": "Video file contains zero readable video frames."
             }
 
-        # Calculate sample step based on sample interval
-        frames_per_step = max(1, int(fps * sample_interval))
-        sampled_indices = list(range(0, total_frames, frames_per_step))
-
-        # Ensure we sample at least MIN_ANALYSIS_FRAMES and at most max_frames
-        if len(sampled_indices) > max_frames:
-            sampled_indices = list(np.linspace(0, total_frames - 1, num=max_frames, dtype=int))
-        elif len(sampled_indices) < MIN_ANALYSIS_FRAMES and total_frames >= MIN_ANALYSIS_FRAMES:
-            sampled_indices = list(np.linspace(0, total_frames - 1, num=MIN_ANALYSIS_FRAMES, dtype=int))
+        # Deterministic sampling: choose evenly spaced frames across duration
+        num_samples = min(max_frames, max(MIN_ANALYSIS_FRAMES, total_frames))
+        sampled_indices = list(np.linspace(0, total_frames - 1, num=num_samples, dtype=int))
+        # Remove any potential duplicates while preserving order
+        sampled_indices = sorted(list(dict.fromkeys(sampled_indices)))
 
         frame_results: List[Dict[str, Any]] = []
         frame_scores: List[float] = []
@@ -121,7 +117,7 @@ def analyze_video_file(
             if not ret or frame is None:
                 continue
 
-            timestamp = round(float(frame_idx / fps), 2)
+            timestamp = round(float(frame_idx / fps), 2) if fps > 0 else 0.0
 
             # Preprocess / Face ROI
             processed_bgr = extract_face_or_crop(frame)
@@ -132,7 +128,7 @@ def analyze_video_file(
             pil_img.save(buf, format="JPEG", quality=85)
             img_bytes = buf.getvalue()
 
-            # Execute Vision Transformer + ELA on frame
+            # Execute DeepfakeCNN / ViT on frame
             res = analyze_image_bytes(img_bytes)
             if res.get("success"):
                 risk = float(res.get("risk_score", res.get("fakeProbability", 10.0)))
@@ -176,12 +172,12 @@ def analyze_video_file(
         avg_conf = clamp_score(float(np.mean(confidences)))
 
         # Temporal Aggregation Logic:
-        # Weighted combination: 60% peak frame risk + 40% average frame risk
+        # Weighted combination: 60% peak frame risk + 40% average frame risk when suspicious ratio is notable
         suspicion_ratio = suspicious_count / float(analyzed_frames)
-        if suspicion_ratio >= 0.40 or max_risk >= 75.0:
-            overall_risk = clamp_score(0.65 * max_risk + 0.35 * avg_risk)
+        if suspicion_ratio >= 0.35 or max_risk >= 70.0:
+            overall_risk = clamp_score(0.60 * max_risk + 0.40 * avg_risk)
         else:
-            overall_risk = clamp_score(0.40 * max_risk + 0.60 * avg_risk)
+            overall_risk = clamp_score(0.35 * max_risk + 0.65 * avg_risk)
 
         authenticity = clamp_score(100.0 - overall_risk)
         elapsed_sec = round(time.time() - start_time, 2)
@@ -203,8 +199,12 @@ def analyze_video_file(
             evidence_list = [
                 f"Continuous natural facial texture verified across {analyzed_frames} sampled frames.",
                 f"Zero frame temporal variance spikes (Peak frame risk: {max_risk:.1f}/100).",
-                "Vision Transformer confirmed authentic camera frame noise signatures."
+                "DeepfakeCNN verified authentic camera sensor noise and compression."
             ]
+            recommendation_dict = {
+                "action": "SAFE",
+                "text": "Video exhibits natural facial dynamics and consistent temporal textures. No synthetic tampering identified."
+            }
         elif overall_risk <= 50.0:
             classification = "SUSPICIOUS"
             explanation = (
@@ -216,10 +216,14 @@ def analyze_video_file(
                 f"Peak frame manipulation score: {max_risk:.1f} / 100.",
                 "Temporal consistency is discontinuous between sampled intervals."
             ]
+            recommendation_dict = {
+                "action": "REVIEW",
+                "text": "Moderate temporal anomalies or compression artifacts detected. Inspect the frame timeline chips before trusting."
+            }
         else:
             classification = "AI-GENERATED"
             explanation = (
-                f"Neural Vision Transformer detected deepfake manipulation artifacts across {suspicious_count} "
+                f"Neural deepfake detection identified synthetic manipulation artifacts across {suspicious_count} "
                 f"sampled frames (Peak frame risk: {max_risk:.1f}/100, Model Confidence: {avg_conf:.1f}%)."
             )
             evidence_list = [
@@ -227,6 +231,10 @@ def analyze_video_file(
                 f"Peak frame deepfake probability reached {max_risk:.1f} / 100.",
                 "Spatial blend boundary irregularities identified in facial region."
             ]
+            recommendation_dict = {
+                "action": "HIGH_RISK",
+                "text": "Deepfake manipulation markers identified across sampled video frames. Do not trust the authenticity of this media."
+            }
 
         indicators = [
             {
@@ -242,12 +250,15 @@ def analyze_video_file(
                 "level": "high" if max_risk >= 65.0 else "mod" if max_risk > 35.0 else "safe"
             },
             {
-                "label": "Vision Transformer (ViT) Spatial Inspection",
+                "label": "DeepfakeCNN Spatial Inspection",
                 "detail": f"Evaluated spatial high-frequency noise and facial boundary blending with {avg_conf:.1f}% model confidence.",
                 "score": round(overall_risk, 1),
                 "level": "safe" if overall_risk <= 40.0 else "high"
             }
         ]
+
+        from backend.detectors.image_detector import _trained_model
+        model_is_available = _trained_model is not None or os.path.exists(os.path.join(os.path.dirname(__file__), "..", "..", "models", "image", "best_model.pt"))
 
         return {
             "success": True,
@@ -269,27 +280,36 @@ def analyze_video_file(
             "authenticity": round(authenticity, 1),
             "authenticity_probability": round(authenticity, 1),
             "duration": round(duration_sec, 2),
+            "fps": round(fps, 1),
+            "resolution": f"{width}x{height}",
             "total_frames": total_frames,
+            "sampled_frames": len(sampled_indices),
             "analyzed_frames": analyzed_frames,
             "frames_analyzed": analyzed_frames,
             "suspicious_frames": suspicious_count,
             "real_frames": real_count,
-            "fps": round(fps, 1),
-            "resolution": f"{width}x{height}",
+            "processing_time": elapsed_sec,
+            "model": "DeepfakeCNN (Frame-Level Aggregation)",
+            "model_available": model_is_available,
+            "videoModelType": "frame_level_aggregation",
             "explanation": explanation,
             "evidence": evidence_list,
+            "recommendation": recommendation_dict,
             "technical": {
-                "model": "OpenCV Temporal Sampling + HuggingFace ViT",
+                "model": "DeepfakeCNN (Frame-Level Aggregation)",
+                "videoModelType": "frame_level_aggregation",
                 "duration_seconds": round(duration_sec, 2),
                 "fps": round(fps, 1),
                 "resolution": f"{width} × {height}",
+                "total_frames": total_frames,
+                "sampled_frames": len(sampled_indices),
                 "analyzed_frames": analyzed_frames,
                 "suspicious_frames": suspicious_count,
                 "processing_time_sec": elapsed_sec
             },
             "limitations": [
-                "Temporal analysis is based on sampled keyframes; very short micro-expressions between samples might escape detection.",
-                "Video compression and codec re-encoding can induce false positive edge artifacts."
+                "Temporal analysis is based on sampled keyframes; micro-expressions occurring entirely between sample intervals might escape detection.",
+                "Heavy video compression (H.264/H.265 high quantizers) can induce high-frequency edge degradation."
             ],
             "indicators": indicators,
             "frame_results": frame_results,

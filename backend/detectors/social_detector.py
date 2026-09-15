@@ -39,7 +39,7 @@ FEATURE_COLS = [
 ]
 
 class SocialSpamNet(nn.Module):
-    def __init__(self, input_dim=11):
+    def __init__(self, input_dim=14):
         super(SocialSpamNet, self).__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, 64),
@@ -50,9 +50,7 @@ class SocialSpamNet(nn.Module):
             nn.BatchNorm1d(32),
             nn.LeakyReLU(0.1),
             nn.Dropout(0.15),
-            nn.Linear(32, 16),
-            nn.LeakyReLU(0.1),
-            nn.Linear(16, 2)
+            nn.Linear(32, 2)
         )
 
     def forward(self, x):
@@ -104,7 +102,7 @@ class SocialMediaDetector:
         return cls._instance
 
     def _load(self):
-        # 1. Load archive (14) model
+        # 1. Load Primary Social Model (SocialProfileNet from archive (15) or SocialSpamNet from archive (14))
         if MODEL_PATH.exists() and SCALER_PATH.exists():
             try:
                 with open(SCALER_PATH, "rb") as f:
@@ -118,15 +116,23 @@ class SocialMediaDetector:
                     with open(METADATA_PATH, "r", encoding="utf-8") as f:
                         self.metadata = json.load(f)
 
-                self.model = SocialSpamNet(input_dim=len(self.features)).to(self.device)
                 state_dict = torch.load(MODEL_PATH, map_location=self.device, weights_only=True)
-                self.model.load_state_dict(state_dict)
-                self.model.eval()
+                if len(self.features) == 14:
+                    self.model_profile = SocialProfileNet(input_dim=14).to(self.device)
+                    self.model_profile.load_state_dict(state_dict)
+                    self.model_profile.eval()
+                    self.scaler_profile = self.scaler
+                    self.features_profile = self.features
+                    self.metadata_profile = self.metadata
+                else:
+                    self.model = SocialSpamNet(input_dim=len(self.features)).to(self.device)
+                    self.model.load_state_dict(state_dict)
+                    self.model.eval()
                 self.is_ready = True
             except Exception as e:
-                print(f"Error loading SocialSpamNet: {e}")
+                print(f"Error loading Primary Social Model: {e}")
 
-        # 2. Load archive (15) profile model if available
+        # 2. Load Secondary Profile Model if separate checkpoint exists
         prof_model_p = MODELS_DIR / "best_model_profile.pt"
         prof_scaler_p = MODELS_DIR / "scaler_profile.pkl"
         prof_feats_p = MODELS_DIR / "feature_names_profile.json"
@@ -148,7 +154,7 @@ class SocialMediaDetector:
                 self.model_profile.eval()
                 self.is_ready = True
             except Exception as e:
-                print(f"Error loading SocialProfileNet: {e}")
+                print(f"Error loading secondary SocialProfileNet: {e}")
 
     def extract_features_from_dict(self, data: Dict[str, Any]) -> np.ndarray:
         """
@@ -258,22 +264,24 @@ class SocialMediaDetector:
                 }
 
         try:
-            # Check if this request is targeted to archive (15) profile features
-            use_profile_net = (
-                self.model_profile is not None and
-                self.scaler_profile is not None and
-                any(k in profile_data for k in ["account_age_days", "profile_completeness", "home_country", "account_type", "has_banner"])
-            )
-
-            if use_profile_net:
+            # Check if this request is targeted to archive (15) profile features (14 features) or archive (14) spam features (11 features)
+            is_14_feat_model = (len(self.features) == 14 or (self.scaler is not None and getattr(self.scaler, 'n_features_in_', 0) == 14))
+            
+            if is_14_feat_model and self.model_profile is not None:
                 raw_feats = self.extract_profile_features_from_dict(profile_data)
-                scaled_feats = self.scaler_profile.transform(raw_feats)
+                scaler_to_use = self.scaler_profile if self.scaler_profile is not None else self.scaler
+                scaled_feats = scaler_to_use.transform(raw_feats)
                 tensor_x = torch.tensor(scaled_feats, dtype=torch.float32).to(self.device)
 
                 with torch.no_grad():
                     logits = self.model_profile(tensor_x)
-                    prob_fake = float(torch.sigmoid(logits).cpu().numpy()[0, 0])
-                    prob_genuine = 1.0 - prob_fake
+                    if logits.shape[1] == 2:
+                        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                        prob_genuine = float(probs[0])
+                        prob_fake = float(probs[1])
+                    else:
+                        prob_fake = float(torch.sigmoid(logits).cpu().numpy()[0, 0])
+                        prob_genuine = 1.0 - prob_fake
 
                 model_used_name = "SocialProfileNet (PyTorch 14-Feature Deep Net, archive (15))"
             else:

@@ -2299,7 +2299,10 @@ function getAuthHeaders(isFormData = false) {
   return h;
 }
 
-async function apiPost(endpoint, body, isFormData = false, timeoutMs = 45000) {
+async function apiPost(endpoint, body, isFormData = false, timeoutMs = 60000) {
+  if (endpoint.includes('/video')) {
+    timeoutMs = Math.max(timeoutMs, 120000);
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -2311,10 +2314,23 @@ async function apiPost(endpoint, body, isFormData = false, timeoutMs = 45000) {
     });
     clearTimeout(timer);
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || data.detail || `Server returned ${response.status}`);
+    if (!response.ok) {
+      let errMsg = data.error || data.detail || `Server error (HTTP ${response.status})`;
+      if (typeof errMsg === 'object') errMsg = JSON.stringify(errMsg);
+      throw new Error(errMsg);
+    }
+    if (data.success === false && data.error) {
+      throw new Error(data.error);
+    }
     return data;
   } catch (err) {
     clearTimeout(timer);
+    if (err.name === 'AbortError') {
+      throw new Error('Analysis request timed out. Video processing took longer than expected.');
+    }
+    if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError'))) {
+      throw new Error('Local backend unavailable. Please check if TrustGuard AI server is running on port 8000.');
+    }
     throw err;
   }
 }
@@ -2728,7 +2744,13 @@ function runPipeline(stepDefs, containerId, statusId, asyncAction){
       if (statusEl) { statusEl.textContent = 'Prediction Complete'; statusEl.style.color = 'var(--safe)'; }
     } catch (err) {
       clearInterval(interval);
-      if (statusEl) { statusEl.textContent = 'Error during analysis'; statusEl.style.color = 'var(--danger)'; }
+      console.error('[TrustGuard Pipeline Error]:', err);
+      let errMsg = err.message || 'Error during analysis';
+      if (statusEl) {
+        statusEl.textContent = `Analysis Failed: ${errMsg}`;
+        statusEl.style.color = 'var(--danger)';
+      }
+      toast('Analysis Error', errMsg, 'danger');
     }
   })();
 }
@@ -3163,7 +3185,8 @@ document.getElementById('vidAnalyzeBtn')?.addEventListener('click', async ()=>{
   runPipeline(FULL_PIPELINE, 'vidSteps', 'vidPipeStatus', async ()=>{
     const formData = new FormData();
     formData.append('video', f);
-    const apiRes = await apiPost('/api/analyze/video', formData, true);
+    formData.append('file', f);
+    const apiRes = await apiPost('/api/analyze/video', formData, true, 120000);
     const norm = normalizePrediction(apiRes, 'Video', f.name);
     if(resWrap){
       resWrap.innerHTML = renderUnifiedResultCard(norm, {
@@ -3176,7 +3199,7 @@ document.getElementById('vidAnalyzeBtn')?.addEventListener('click', async ()=>{
     }
     pushHistory({ contentLabel: f.name, contentType: 'Video', score: norm.riskScore, trust: norm.authenticity, confidence: norm.confidence, date: Date.now() });
     if (norm.riskScore >= 65) triggerHighRiskAlert(norm, 'Video', f.name);
-    toast(norm.isGenuine ? '✓ Genuine Video' : '⚠ Video Deepfake Detected', `Analyzed ${apiRes.analyzed_frames || 0} frames`, norm.isGenuine ? 'safe' : 'danger');
+    toast(norm.isGenuine ? '✓ Genuine Video' : '⚠ Video Deepfake Detected', `Analyzed ${apiRes.analyzed_frames || 0} frames (${apiRes.duration || 0}s)`, norm.isGenuine ? 'safe' : 'danger');
   });
 });
 document.getElementById('vidResetBtn')?.addEventListener('click', ()=>{ delete filesStore['video']; const p=document.getElementById('prev-video'); if(p) p.innerHTML=''; const r=document.getElementById('vidResult'); if(r){ r.classList.remove('show'); r.innerHTML=''; } });
@@ -4061,28 +4084,23 @@ async function checkBackendEngineStatus() {
         if (data.urlModelReady) activeCount++;
         if (data.smsModelReady) activeCount++;
         if (data.emailModelReady) activeCount++;
-        const modelInfo = `${activeCount} Neural Models Active (Vision · Voice · URL · SMS · Email)`;
+        if (data.socialModelReady) activeCount++;
+        const modelInfo = `${activeCount} Local Neural Models Active (Vision · Voice · URL · SMS · Email · Social)`;
         badge.innerHTML = `<i class="dot" style="background:var(--safe); box-shadow:0 0 6px var(--safe);"></i>Engine: ${modelInfo}`;
         badge.style.color = 'var(--safe)';
       }
-      if (statusTxt) { statusTxt.textContent = '● Online'; statusTxt.style.color = 'var(--safe)'; }
-      if (tag) { tag.textContent = 'ONLINE'; tag.style.color = 'var(--safe)'; }
-      const offBanner = document.getElementById('backendOfflineBanner');
-      if (offBanner) offBanner.style.display = 'none';
+      if (statusTxt) { statusTxt.textContent = '● Online (Local AI Ready)'; statusTxt.style.color = 'var(--safe)'; }
+      if (tag) { tag.textContent = 'ONLINE / LOCAL'; tag.style.color = 'var(--safe)'; }
     } else {
-      const offBanner = document.getElementById('backendOfflineBanner');
-      if (offBanner) offBanner.style.display = 'block';
-      if (badge) { badge.innerHTML = `<i class="dot" style="background:var(--danger)"></i>Offline`; badge.style.color = 'var(--danger-2)'; }
-      if (statusTxt) { statusTxt.textContent = '● Offline'; statusTxt.style.color = 'var(--danger-2)'; }
-      if (tag) { tag.textContent = 'OFFLINE'; tag.style.color = 'var(--danger-2)'; }
+      if (badge) { badge.innerHTML = `<i class="dot" style="background:var(--danger)"></i>Local Backend Stopped`; badge.style.color = 'var(--danger-2)'; }
+      if (statusTxt) { statusTxt.textContent = '● Stopped'; statusTxt.style.color = 'var(--danger-2)'; }
+      if (tag) { tag.textContent = 'STOPPED'; tag.style.color = 'var(--danger-2)'; }
     }
   } catch (e) {
-    const offBanner = document.getElementById('backendOfflineBanner');
-    if (offBanner) offBanner.style.display = 'block';
-    if (badge) { badge.innerHTML = `<i class="dot" style="background:var(--danger)"></i>Offline`; badge.style.color = 'var(--danger-2)'; }
+    if (badge) { badge.innerHTML = `<i class="dot" style="background:var(--danger)"></i>Local Backend Stopped`; badge.style.color = 'var(--danger-2)'; }
     if (latEl) latEl.textContent = '—';
-    if (statusTxt) { statusTxt.textContent = '● Offline'; statusTxt.style.color = 'var(--danger-2)'; }
-    if (tag) { tag.textContent = 'OFFLINE'; tag.style.color = 'var(--danger-2)'; }
+    if (statusTxt) { statusTxt.textContent = '● Backend Stopped (Run start_trustguard.bat)'; statusTxt.style.color = 'var(--danger-2)'; }
+    if (tag) { tag.textContent = 'BACKEND STOPPED'; tag.style.color = 'var(--danger-2)'; }
   }
 }
 

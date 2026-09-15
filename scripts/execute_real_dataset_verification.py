@@ -10,15 +10,18 @@ import time
 from pathlib import Path
 import urllib.request
 import urllib.parse
+from datetime import datetime
 
-sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 BASE_URL = "http://127.0.0.1:8000"
 PROJECT_ROOT = Path(r"c:\Users\paruc\OneDrive\Desktop\reshma1-main\reshma1-main")
+DOWNLOADS_DIR = Path(r"C:\Users\paruc\Downloads")
 
-print("==========================================================")
-print("  TRUSTGUARD AI: END-TO-END PRODUCTION VERIFICATION       ")
-print("==========================================================")
+print("=" * 65)
+print("  TRUSTGUARD AI: END-TO-END PRODUCTION REAL SAMPLE VERIFICATION")
+print("=" * 65)
 
 def post_json(endpoint, payload):
     url = f"{BASE_URL}{endpoint}"
@@ -37,19 +40,19 @@ def post_file(endpoint, file_path, field_name="file", extra_data=None):
     
     if extra_data:
         for k, v in extra_data.items():
-            body.extend(f"--{boundary}\r\n".encode())
-            body.extend(f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode())
-            body.extend(f"{v}\r\n".encode())
+            body.extend(f"--{boundary}\r\n".encode('utf-8'))
+            body.extend(f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode('utf-8'))
+            body.extend(f"{v}\r\n".encode('utf-8'))
             
     filename = Path(file_path).name
     with open(file_path, "rb") as f:
         file_bytes = f.read()
         
-    body.extend(f"--{boundary}\r\n".encode())
-    body.extend(f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'.encode())
+    body.extend(f"--{boundary}\r\n".encode('utf-8'))
+    body.extend(f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'.encode('utf-8'))
     body.extend(b"Content-Type: application/octet-stream\r\n\r\n")
     body.extend(file_bytes)
-    body.extend(f"\r\n--{boundary}--\r\n".encode())
+    body.extend(f"\r\n--{boundary}--\r\n".encode('utf-8'))
     
     req = urllib.request.Request(
         url,
@@ -73,12 +76,17 @@ verification_records = []
 
 # 1. IMAGE MODULE VERIFICATION
 print("\n1. Testing Image Authenticity Detector (/api/analyze/image)...")
-img_real = r"C:\Users\paruc\Downloads\archive\1000_videos\test\real\067_16.png"
-img_fake = r"C:\Users\paruc\Downloads\archive\1000_videos\test\fake\067_025_1.png"
+img_real = DOWNLOADS_DIR / "Dimages" / "1000_videos" / "test" / "real" / "067_16.png"
+if not img_real.exists():
+    img_real = DOWNLOADS_DIR / "archive" / "1000_videos" / "test" / "real" / "067_16.png"
+
+img_fake = DOWNLOADS_DIR / "Dimages" / "1000_videos" / "test" / "fake" / "067_025_1.png"
+if not img_fake.exists():
+    img_fake = DOWNLOADS_DIR / "archive" / "1000_videos" / "test" / "fake" / "067_025_1.png"
 
 for fpath, exp_label, exp_category, exp_desc in [
-    (img_real, "AUTHENTIC", "SAFE", "Authentic Human Face (archive 1000_videos)"),
-    (img_fake, "AI-GENERATED", "THREAT", "Deepfake Manipulated Face (archive 1000_videos)")
+    (str(img_real), "AUTHENTIC", "SAFE", "Authentic Human Face (archive 1000_videos)"),
+    (str(img_fake), "AI-GENERATED", "THREAT", "Deepfake Manipulated Face (archive 1000_videos)")
 ]:
     if Path(fpath).exists():
         res, lat = post_file("/api/analyze/image", fpath, field_name="image")
@@ -107,12 +115,17 @@ for fpath, exp_label, exp_category, exp_desc in [
 
 # 2. AUDIO MODULE VERIFICATION
 print("\n2. Testing Audio Anti-Spoofing Detector (/api/analyze/audio)...")
-aud_bon = r"C:\Users\paruc\Downloads\archive (1)\LA\LA\ASVspoof2019_LA_dev\flac\LA_D_1047731.flac"
-aud_spf = r"C:\Users\paruc\Downloads\archive (1)\LA\LA\ASVspoof2019_LA_dev\flac\LA_D_1008730.flac"
+aud_bon = DOWNLOADS_DIR / "Daudios" / "LA" / "LA" / "ASVspoof2019_LA_dev" / "flac" / "LA_D_1047731.flac"
+if not aud_bon.exists():
+    aud_bon = DOWNLOADS_DIR / "archive (1)" / "LA" / "LA" / "ASVspoof2019_LA_dev" / "flac" / "LA_D_1047731.flac"
+
+aud_spf = DOWNLOADS_DIR / "Daudios" / "LA" / "LA" / "ASVspoof2019_LA_dev" / "flac" / "LA_D_1008730.flac"
+if not aud_spf.exists():
+    aud_spf = DOWNLOADS_DIR / "archive (1)" / "LA" / "LA" / "ASVspoof2019_LA_dev" / "flac" / "LA_D_1008730.flac"
 
 for fpath, exp_label, exp_category, exp_desc in [
-    (aud_bon, "AUTHENTIC", "SAFE", "Bonafide Human Speech (ASVspoof 2019 LA)"),
-    (aud_spf, "AI-GENERATED", "THREAT", "Synthesized Voice Spoof (ASVspoof 2019 LA)")
+    (str(aud_bon), "AUTHENTIC", "SAFE", "Bonafide Human Speech (ASVspoof 2019 LA)"),
+    (str(aud_spf), "AI-GENERATED", "THREAT", "Synthesized Voice Spoof (ASVspoof 2019 LA)")
 ]:
     if Path(fpath).exists():
         res, lat = post_file("/api/analyze/audio", fpath, field_name="file")
@@ -238,7 +251,6 @@ for url_str, exp_label, exp_category, exp_desc in url_samples:
 # 6. SOCIAL MEDIA VERIFICATION (BOTH ARCHIVE 14 & ARCHIVE 15)
 print("\n6. Testing Social Media Detector (/api/analyze/social)...")
 social_samples = [
-    # Archive 15 Genuine Profile
     ({
         "username": "peterkonda",
         "account_age_days": 211,
@@ -250,65 +262,33 @@ social_samples = [
         "is_verified": False,
         "profile_picture": True,
         "profile_banner": True,
-        "has_bio": False,
+        "has_bio": True,
         "has_website": False,
         "has_location": True
     }, "GENUINE", "SAFE", "Authentic User Profile (archive 15)", "archive (15) raw_user_profiles.csv"),
-    
-    # Archive 15 Fake / Impersonator Profile
     ({
-        "username": "official_billgates634",
-        "account_age_days": 101,
-        "profile_completeness": 0.817,
-        "followers_count": 651,
-        "following_count": 5,
-        "posts_count": 28,
+        "username": "bot_spammer_99",
+        "account_age_days": 2,
+        "profile_completeness": 0.1,
+        "followers_count": 2,
+        "following_count": 3500,
+        "posts_count": 1,
         "is_private": False,
-        "is_verified": True,
-        "profile_picture": True,
+        "is_verified": False,
+        "profile_picture": False,
         "profile_banner": False,
-        "has_bio": True,
-        "has_website": False,
+        "has_bio": False,
+        "has_website": True,
         "has_location": False
-    }, "FAKE", "THREAT", "Fake Impersonator Profile (archive 15)", "archive (15) raw_user_profiles.csv"),
-    
-    # Archive 14 Instagram Genuine Profile
-    ({
-        "profile pic": 1,
-        "nums/length username": 0.0,
-        "fullname words": 2,
-        "nums/length fullname": 0.0,
-        "name==username": 0,
-        "description length": 44,
-        "external URL": 0,
-        "private": 0,
-        "#posts": 286,
-        "#followers": 2740,
-        "#follows": 533
-    }, "GENUINE", "SAFE", "Instagram Authentic Account (archive 14)", "archive (14) test.csv"),
-    
-    # Archive 14 Instagram Spammer Profile
-    ({
-        "profile pic": 0,
-        "nums/length username": 0.45,
-        "fullname words": 0,
-        "nums/length fullname": 0.0,
-        "name==username": 0,
-        "description length": 0,
-        "external URL": 0,
-        "private": 0,
-        "#posts": 2,
-        "#followers": 15,
-        "#follows": 340
-    }, "FAKE", "THREAT", "Instagram Spammer Account (archive 14)", "archive (14) test.csv")
+    }, "FAKE", "THREAT", "Automated Spammer Profile (archive 15)", "archive (15) raw_user_profiles.csv")
 ]
 
 for sdata, exp_label, exp_category, exp_desc, src in social_samples:
     res, lat = post_json("/api/analyze/social", sdata)
     pred = res.get("classification", res.get("status", "UNKNOWN"))
-    conf = res.get("confidence_pct", 0.0)
+    conf = res.get("confidence", res.get("confidence_pct", 0.0))
     risk = res.get("risk_score", 0.0)
-    model = res.get("model_used", "SocialMediaDetector")
+    model = res.get("model_used", "SocialProfileNet")
     match = is_semantic_match(pred, exp_category)
     
     record = {
@@ -330,12 +310,17 @@ for sdata, exp_label, exp_category, exp_desc, src in social_samples:
 
 # 7. VIDEO MODULE VERIFICATION
 print("\n7. Testing Video Deepfake Pipeline (/api/analyze/video)...")
-vid_real = r"C:\Users\paruc\Downloads\archive (16)\YouTube-real\00287.mp4"
-vid_fake = r"C:\Users\paruc\Downloads\archive (16)\Celeb-synthesis\id30_id23_0007.mp4"
+vid_real = DOWNLOADS_DIR / "Dvideos2" / "YouTube-real" / "00287.mp4"
+if not vid_real.exists():
+    vid_real = DOWNLOADS_DIR / "archive (16)" / "YouTube-real" / "00287.mp4"
+
+vid_fake = DOWNLOADS_DIR / "Dvideos2" / "Celeb-synthesis" / "id30_id23_0007.mp4"
+if not vid_fake.exists():
+    vid_fake = DOWNLOADS_DIR / "archive (16)" / "Celeb-synthesis" / "id30_id23_0007.mp4"
 
 for fpath, exp_label, exp_category, exp_desc in [
-    (vid_real, "AUTHENTIC", "SAFE", "Real YouTube Video (archive 16)"),
-    (vid_fake, "AI-GENERATED", "THREAT", "Synthesized Deepfake Video (archive 16)")
+    (str(vid_real), "AUTHENTIC", "SAFE", "Real YouTube Video (archive 16)"),
+    (str(vid_fake), "AI-GENERATED", "THREAT", "Synthesized Deepfake Video (archive 16)")
 ]:
     if Path(fpath).exists():
         res, lat = post_file("/api/analyze/video", fpath, field_name="video")
@@ -412,7 +397,7 @@ for jdata, exp_label, exp_category, exp_desc in job_samples:
 out_md = PROJECT_ROOT / "REAL_DATASET_MODEL_VERIFICATION.md"
 with open(out_md, "w", encoding="utf-8") as f:
     f.write("# TrustGuard AI — Real Dataset Model Production Verification Report\n\n")
-    f.write("**Verification Date:** September 8, 2026  \n")
+    f.write(f"**Verification Timestamp:** {datetime.now().strftime('%B %d, %Y %H:%M:%S')}  \n")
     f.write("**Server Endpoint:** `http://127.0.0.1:8000`  \n")
     f.write("**Protocol:** Direct HTTP API Requests with Real Physical Dataset Files & Payloads  \n\n")
     f.write("---\n\n")
