@@ -837,7 +837,7 @@ table.data-table tr:hover td{background:rgba(120,150,200,.04);}
 <div id="backendOfflineBanner" style="display:none; background:linear-gradient(90deg, #dc2626, #b91c1c); color:#ffffff; padding:9px 18px; text-align:center; font-size:12.5px; font-weight:600; z-index:9999; position:sticky; top:0; box-shadow:0 4px 15px rgba(220,38,38,0.4);">
   <span style="display:inline-flex; align-items:center; gap:8px;">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-    TrustGuard AI Backend is Offline. Real AI models are inactive. Start server: 
+    TrustGuard AI backend is not connected. Start the local FastAPI server at port 8000:
     <code style="background:rgba(0,0,0,0.3); padding:2px 8px; border-radius:4px; font-family:var(--mono); font-size:11.5px;">python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000</code>
   </span>
 </div>
@@ -2178,6 +2178,16 @@ table.data-table tr:hover td{background:rgba(120,150,200,.04);}
               </div>
             </div>
           </div>
+          <div class="card card-pad" style="grid-column: 1 / -1;">
+            <h3 style="font-family:var(--disp); font-size:15px; margin-bottom:14px;">FastAPI Backend Connection (Local & LAN)</h3>
+            <div style="display:flex; flex-direction:column; gap:12px;">
+              <div>
+                <label class="field-label">Backend API Base URL (Default: <code>http://127.0.0.1:8000</code>)</label>
+                <input type="text" class="field" id="settingBackendUrl" placeholder="http://127.0.0.1:8000">
+                <span style="font-size:11px; color:var(--text-faint); margin-top:4px; display:block;">For local execution or GitHub Pages on same PC, leave as <code>http://127.0.0.1:8000</code>. For LAN access from phone/laptop on same Wi-Fi, enter <code>http://&lt;PC-LAN-IP&gt;:8000</code>.</span>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="action-row" style="margin-top:16px;">
           <button class="btn btn-primary" id="saveSettingsBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Save Changes</button>
@@ -2275,11 +2285,22 @@ table.data-table tr:hover td{background:rgba(120,150,200,.04);}
    TRUSTGUARD AI — CENTRALIZED FRONTEND API CONTROLLER
    ============================================================ */
 window.API_BASE_URL = (function() {
-  if (window.location.origin && window.location.origin.includes(':5173')) {
-    return 'http://127.0.0.1:8000';
+  if (typeof getTrustGuardApiBase === 'function') {
+    return getTrustGuardApiBase();
   }
-  if (window.location.origin && window.location.origin.startsWith('http')) {
-    return window.location.origin;
+  if (typeof window !== 'undefined' && window.TRUSTGUARD_BACKEND_URL && typeof window.TRUSTGUARD_BACKEND_URL === 'string' && window.TRUSTGUARD_BACKEND_URL.trim()) {
+    return window.TRUSTGUARD_BACKEND_URL.trim().replace(/\/+$/, '');
+  }
+  try {
+    const saved = localStorage.getItem('trustguard_backend_url');
+    if (saved && typeof saved === 'string' && saved.trim()) return saved.trim().replace(/\/+$/, '');
+  } catch(_) {}
+  if (typeof window !== 'undefined' && window.location) {
+    const orig = window.location.origin || '';
+    if (orig.includes('github.io') || orig.includes('pages.dev') || orig.includes('netlify.app') || orig.includes('vercel.app') || orig.includes(':5173') || orig.includes(':3000') || orig.includes(':5500') || window.location.protocol === 'file:') {
+      return 'http://127.0.0.1:8000';
+    }
+    if (orig.startsWith('http://') || orig.startsWith('https://')) return orig.replace(/\/+$/, '');
   }
   return 'http://127.0.0.1:8000';
 })();
@@ -2295,8 +2316,55 @@ let lastScanContext = null;
 function getAuthHeaders(isFormData = false) {
   const h = {};
   if (!isFormData) h['Content-Type'] = 'application/json';
-  if (currentToken) h['Authorization'] = `Bearer ${currentToken}`;
+  if (currentToken) {
+    h['Authorization'] = `Bearer ${currentToken}`;
+    h['x-session-token'] = currentToken;
+  }
   return h;
+}
+
+async function parseSafeResponse(response, endpoint) {
+  if (window.tgAPI && typeof window.tgAPI.parseSafeResponse === 'function') {
+    return await window.tgAPI.parseSafeResponse(response, endpoint);
+  }
+  const contentType = response.headers.get('content-type') || '';
+  const isJson = contentType.toLowerCase().includes('application/json');
+  let rawText = '';
+  try { rawText = await response.text(); } catch (_) { rawText = ''; }
+  let data = null;
+  if (isJson && rawText) {
+    try { data = JSON.parse(rawText); } catch (_) { data = null; }
+  }
+  if (!isJson || rawText.trim().startsWith('<') || rawText.trim().toLowerCase().startsWith('<!doctype')) {
+    const activeUrl = window.API_BASE_URL || 'http://127.0.0.1:8000';
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(`Backend connection failed. The request reached a web page instead of the TrustGuard AI FastAPI backend. Please start the local backend at ${activeUrl}.`);
+      }
+      throw new Error(`Server returned HTML error (HTTP ${response.status}). Ensure the FastAPI backend is running on ${activeUrl}.`);
+    }
+    throw new Error(`Backend connection failed. The request reached a web page instead of the TrustGuard AI FastAPI backend. Please start the local backend at ${activeUrl}.`);
+  }
+  if (!data) {
+    throw new Error(`Invalid or empty JSON response received from backend (HTTP ${response.status}).`);
+  }
+  if (!response.ok) {
+    let errMsg = data.error || data.detail || data.message;
+    if (typeof errMsg === 'object') errMsg = JSON.stringify(errMsg);
+    if (!errMsg) {
+      if (response.status === 400) errMsg = 'Bad Request: Missing or invalid parameters sent to detector.';
+      else if (response.status === 401) errMsg = 'Authentication error: Session expired or invalid token.';
+      else if (response.status === 404) errMsg = `Endpoint not found: ${endpoint}`;
+      else if (response.status === 422) errMsg = `Validation Error: ${JSON.stringify(data.detail || data)}`;
+      else if (response.status === 500) errMsg = 'Internal Server Error: Forensic model processing error in backend.';
+      else errMsg = `Server returned HTTP ${response.status}`;
+    }
+    throw new Error(errMsg);
+  }
+  if (data.success === false && data.error) {
+    throw new Error(data.error);
+  }
+  return data;
 }
 
 async function apiPost(endpoint, body, isFormData = false, timeoutMs = 60000) {
@@ -2305,54 +2373,58 @@ async function apiPost(endpoint, body, isFormData = false, timeoutMs = 60000) {
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const baseUrl = window.API_BASE_URL || (typeof getTrustGuardApiBase === 'function' ? getTrustGuardApiBase() : 'http://127.0.0.1:8000');
   try {
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    const response = await fetch(`${baseUrl}${endpoint}`, {
       method: 'POST',
       headers: getAuthHeaders(isFormData),
       body: isFormData ? body : JSON.stringify(body),
       signal: controller.signal
     });
     clearTimeout(timer);
-    const data = await response.json();
-    if (!response.ok) {
-      let errMsg = data.error || data.detail || `Server error (HTTP ${response.status})`;
-      if (typeof errMsg === 'object') errMsg = JSON.stringify(errMsg);
-      throw new Error(errMsg);
-    }
-    if (data.success === false && data.error) {
-      throw new Error(data.error);
-    }
-    return data;
+    return await parseSafeResponse(response, endpoint);
   } catch (err) {
     clearTimeout(timer);
     if (err.name === 'AbortError') {
-      throw new Error('Analysis request timed out. Video processing took longer than expected.');
+      throw new Error(`Analysis request timed out after ${timeoutMs / 1000}s. Video processing took longer than expected.`);
     }
-    if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError'))) {
-      throw new Error('Local backend unavailable. Please check if TrustGuard AI server is running on port 8000.');
+    if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('fetch failed'))) {
+      throw new Error(`TrustGuard AI local backend is not running at ${baseUrl}. Start the FastAPI server on port 8000 and try again.`);
     }
     throw err;
   }
 }
 
 async function apiGet(endpoint) {
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    headers: getAuthHeaders(false)
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || data.detail || 'Request failed');
-  return data;
+  const baseUrl = window.API_BASE_URL || (typeof getTrustGuardApiBase === 'function' ? getTrustGuardApiBase() : 'http://127.0.0.1:8000');
+  try {
+    const response = await fetch(`${baseUrl}${endpoint}`, {
+      headers: getAuthHeaders(false)
+    });
+    return await parseSafeResponse(response, endpoint);
+  } catch (err) {
+    if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('fetch failed'))) {
+      throw new Error(`TrustGuard AI local backend is not running at ${baseUrl}. Start the FastAPI server on port 8000 and try again.`);
+    }
+    throw err;
+  }
 }
 
 async function apiPut(endpoint, body) {
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    method: 'PUT',
-    headers: getAuthHeaders(false),
-    body: JSON.stringify(body)
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || data.detail || 'Request failed');
-  return data;
+  const baseUrl = window.API_BASE_URL || (typeof getTrustGuardApiBase === 'function' ? getTrustGuardApiBase() : 'http://127.0.0.1:8000');
+  try {
+    const response = await fetch(`${baseUrl}${endpoint}`, {
+      method: 'PUT',
+      headers: getAuthHeaders(false),
+      body: JSON.stringify(body)
+    });
+    return await parseSafeResponse(response, endpoint);
+  } catch (err) {
+    if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('fetch failed'))) {
+      throw new Error(`TrustGuard AI local backend is not running at ${baseUrl}. Start the FastAPI server on port 8000 and try again.`);
+    }
+    throw err;
+  }
 }
 
 /* ---------- TOAST NOTIFICATIONS ---------- */
@@ -3007,6 +3079,17 @@ document.getElementById('saveSettingsBtn')?.addEventListener('click', async ()=>
   const newOrg = document.getElementById('settingOrg')?.value;
   const newTheme = document.getElementById('settingTheme')?.value;
   const newLang = document.getElementById('settingLang')?.value;
+  const newBackendUrl = document.getElementById('settingBackendUrl')?.value;
+
+  if (newBackendUrl && newBackendUrl.trim()) {
+    const cleanUrl = newBackendUrl.trim().replace(/\/+$/, '');
+    localStorage.setItem('trustguard_backend_url', cleanUrl);
+    window.API_BASE_URL = cleanUrl;
+    window.TRUSTGUARD_BACKEND_URL = cleanUrl;
+    API_BASE_URL = cleanUrl;
+    if (window.tgAPI) window.tgAPI.setBackendUrl(cleanUrl);
+    checkBackendEngineStatus();
+  }
 
   if (currentToken) {
     try {
@@ -4069,35 +4152,33 @@ async function checkBackendEngineStatus() {
   const latEl = document.getElementById('bentoLatency');
   const statusTxt = document.getElementById('bentoStatusTxt');
   const tag = document.getElementById('bentoEngineStatusTag');
+  const offlineBanner = document.getElementById('backendOfflineBanner');
   const t0 = performance.now();
+  const baseUrl = window.API_BASE_URL || (typeof getTrustGuardApiBase === 'function' ? getTrustGuardApiBase() : 'http://127.0.0.1:8000');
   try {
-    const res = await fetch(`${API_BASE_URL}/api/status`);
+    const res = await fetch(`${baseUrl}/api/status`);
     const lat = Math.max(1, Math.round(performance.now() - t0));
     if (latEl) latEl.textContent = `${lat}ms`;
 
-    if (res.ok) {
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
+      if (offlineBanner) offlineBanner.style.display = 'none';
       if (badge) {
-        let activeCount = 0;
-        if (data.imageModelReady) activeCount++;
-        if (data.audioModelReady) activeCount++;
-        if (data.urlModelReady) activeCount++;
-        if (data.smsModelReady) activeCount++;
-        if (data.emailModelReady) activeCount++;
-        if (data.socialModelReady) activeCount++;
-        const modelInfo = `${activeCount} Local Neural Models Active (Vision · Voice · URL · SMS · Email · Social)`;
-        badge.innerHTML = `<i class="dot" style="background:var(--safe); box-shadow:0 0 6px var(--safe);"></i>Engine: ${modelInfo}`;
+        badge.innerHTML = `<i class="dot" style="background:var(--safe); box-shadow:0 0 6px var(--safe);"></i>● Local Backend Connected`;
         badge.style.color = 'var(--safe)';
       }
       if (statusTxt) { statusTxt.textContent = '● Online (Local AI Ready)'; statusTxt.style.color = 'var(--safe)'; }
       if (tag) { tag.textContent = 'ONLINE / LOCAL'; tag.style.color = 'var(--safe)'; }
     } else {
-      if (badge) { badge.innerHTML = `<i class="dot" style="background:var(--danger)"></i>Local Backend Stopped`; badge.style.color = 'var(--danger-2)'; }
+      if (offlineBanner) offlineBanner.style.display = 'block';
+      if (badge) { badge.innerHTML = `<i class="dot" style="background:var(--danger)"></i>● Local Backend Stopped`; badge.style.color = 'var(--danger-2)'; }
       if (statusTxt) { statusTxt.textContent = '● Stopped'; statusTxt.style.color = 'var(--danger-2)'; }
       if (tag) { tag.textContent = 'STOPPED'; tag.style.color = 'var(--danger-2)'; }
     }
   } catch (e) {
-    if (badge) { badge.innerHTML = `<i class="dot" style="background:var(--danger)"></i>Local Backend Stopped`; badge.style.color = 'var(--danger-2)'; }
+    if (offlineBanner) offlineBanner.style.display = 'block';
+    if (badge) { badge.innerHTML = `<i class="dot" style="background:var(--danger)"></i>● Local Backend Stopped`; badge.style.color = 'var(--danger-2)'; }
     if (latEl) latEl.textContent = '—';
     if (statusTxt) { statusTxt.textContent = '● Backend Stopped (Run start_trustguard.bat)'; statusTxt.style.color = 'var(--danger-2)'; }
     if (tag) { tag.textContent = 'BACKEND STOPPED'; tag.style.color = 'var(--danger-2)'; }
@@ -4206,10 +4287,15 @@ document.getElementById('clearAlertsBtn')?.addEventListener('click', () => {
 /* ============ INITIALIZATION ============ */
 window.addEventListener('load', async ()=>{
   pushBotMsg("Hi, I am the TrustGuard AI SOC Assistant. Run a scan anywhere across the platform and I will provide explainable intelligence.");
+  const bUrlInput = document.getElementById('settingBackendUrl');
+  if (bUrlInput) {
+    bUrlInput.value = localStorage.getItem('trustguard_backend_url') || window.API_BASE_URL || 'http://127.0.0.1:8000';
+  }
   await checkAuthSession();
   await checkBackendEngineStatus();
   await fetchDashboardStats();
   await fetchHistoryFromBackend();
+  setInterval(checkBackendEngineStatus, 15000);
 });
 
 /* ============ UNIFIED DRAG & DROP & UNIVERSAL VERIFY SYSTEM ============ */

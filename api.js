@@ -1,21 +1,147 @@
 /**
  * TrustGuard AI — Centralized API Client Layer
- * Handles communication with the FastAPI backend running at /api.
+ * Handles robust communication with the FastAPI backend.
+ * Compatible with local execution (127.0.0.1:8000), LAN devices, and GitHub Pages.
  */
 
-window.API_BASE_URL = window.API_BASE_URL || window.location.origin;
+function getTrustGuardApiBase() {
+  // 1. Explicit window override
+  if (typeof window !== 'undefined' && window.TRUSTGUARD_BACKEND_URL && typeof window.TRUSTGUARD_BACKEND_URL === 'string' && window.TRUSTGUARD_BACKEND_URL.trim()) {
+    return window.TRUSTGUARD_BACKEND_URL.trim().replace(/\/+$/, '');
+  }
+
+  // 2. LocalStorage override (e.g. set by user for remote LAN testing)
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const saved = window.localStorage.getItem('trustguard_backend_url');
+      if (saved && typeof saved === 'string' && saved.trim()) {
+        return saved.trim().replace(/\/+$/, '');
+      }
+    } catch (_) {}
+  }
+
+  // 3. Current origin detection
+  if (typeof window !== 'undefined' && window.location) {
+    const origin = window.location.origin || '';
+    const protocol = window.location.protocol || '';
+
+    // If hosted on GitHub Pages or other static CDNs, ALWAYS point to local FastAPI backend
+    if (origin.includes('github.io') || origin.includes('pages.dev') || origin.includes('netlify.app') || origin.includes('vercel.app')) {
+      return 'http://127.0.0.1:8000';
+    }
+
+    // If opened via local file protocol (file://)
+    if (protocol === 'file:' || !origin || origin === 'null') {
+      return 'http://127.0.0.1:8000';
+    }
+
+    // If opened via frontend dev server (Vite :5173, etc.)
+    if (origin.includes(':5173') || origin.includes(':3000') || origin.includes(':5500') || origin.includes(':8080')) {
+      return 'http://127.0.0.1:8000';
+    }
+
+    // If served directly by FastAPI backend on localhost or LAN (e.g. http://127.0.0.1:8000 or http://192.168.x.x:8000)
+    if (origin.startsWith('http://') || origin.startsWith('https://')) {
+      return origin.replace(/\/+$/, '');
+    }
+  }
+
+  return 'http://127.0.0.1:8000';
+}
+
+window.getTrustGuardApiBase = getTrustGuardApiBase;
+window.API_BASE_URL = getTrustGuardApiBase();
+var API_BASE_URL = window.API_BASE_URL;
 
 class TrustGuardAPI {
-  constructor(baseUrl = window.API_BASE_URL) {
-    this.baseUrl = (baseUrl || window.location.origin).replace(/\/+$/, '');
+  constructor(baseUrl = null) {
+    this.baseUrl = (baseUrl || getTrustGuardApiBase()).replace(/\/+$/, '');
   }
 
   /**
-   * Generic request handler with error normalization.
+   * Helper to set a custom backend URL dynamically (e.g. for LAN testing from phone)
    */
-  async request(endpoint, options = {}) {
+  setBackendUrl(url) {
+    if (url && typeof url === 'string') {
+      this.baseUrl = url.trim().replace(/\/+$/, '');
+      window.TRUSTGUARD_BACKEND_URL = this.baseUrl;
+      window.API_BASE_URL = this.baseUrl;
+      API_BASE_URL = this.baseUrl;
+      try {
+        localStorage.setItem('trustguard_backend_url', this.baseUrl);
+      } catch (_) {}
+    }
+  }
+
+  /**
+   * Safe response parser: Prevents "Unexpected token '<'" SyntaxError when a web server or GitHub Pages returns HTML.
+   */
+  async parseSafeResponse(response, endpoint) {
+    const contentType = response.headers.get('content-type') || '';
+    const isJson = contentType.toLowerCase().includes('application/json');
+
+    let rawText = '';
+    try {
+      rawText = await response.text();
+    } catch (_) {
+      rawText = '';
+    }
+
+    let data = null;
+    if (isJson && rawText) {
+      try {
+        data = JSON.parse(rawText);
+      } catch (_) {
+        data = null;
+      }
+    }
+
+    // If the server returned HTML (e.g. GitHub Pages 404, nginx default, etc.)
+    if (!isJson || rawText.trim().startsWith('<') || rawText.trim().toLowerCase().startsWith('<!doctype')) {
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error(`Backend connection failed. The request reached a static web page instead of the TrustGuard AI FastAPI backend at ${this.baseUrl}. Please ensure the local backend is running (start_trustguard.bat).`);
+        }
+        throw new Error(`Server returned HTML error (HTTP ${response.status}). Ensure the FastAPI backend is running on ${this.baseUrl}.`);
+      }
+      throw new Error(`Backend connection failed. Received HTML response instead of JSON from ${this.baseUrl}${endpoint}.`);
+    }
+
+    if (!data) {
+      throw new Error(`Invalid or empty JSON response received from backend (HTTP ${response.status}).`);
+    }
+
+    if (!response.ok) {
+      let errMsg = data.error || data.detail || data.message;
+      if (typeof errMsg === 'object') errMsg = JSON.stringify(errMsg);
+      if (!errMsg) {
+        if (response.status === 400) errMsg = 'Bad Request: Missing or invalid parameters sent to detector.';
+        else if (response.status === 401) errMsg = 'Authentication error: Session expired or invalid token.';
+        else if (response.status === 404) errMsg = `Endpoint not found: ${endpoint}`;
+        else if (response.status === 422) errMsg = `Validation Error: ${JSON.stringify(data.detail || data)}`;
+        else if (response.status === 500) errMsg = 'Internal Server Error: Forensic model processing error in backend.';
+        else errMsg = `Server returned HTTP ${response.status}`;
+      }
+      throw new Error(errMsg);
+    }
+
+    if (data.success === false && data.error) {
+      throw new Error(data.error);
+    }
+
+    return data;
+  }
+
+  /**
+   * Generic request handler with timeout, auth tokens, and safe response parsing.
+   */
+  async request(endpoint, options = {}, timeoutMs = 60000) {
+    if (endpoint.includes('/video')) {
+      timeoutMs = Math.max(timeoutMs, 120000);
+    }
+
     const url = `${this.baseUrl}${endpoint}`;
-    const token = localStorage.getItem('tg_token');
+    const token = localStorage.getItem('trustguard_token') || localStorage.getItem('tg_token');
     
     const headers = options.headers || {};
     if (token) {
@@ -23,20 +149,25 @@ class TrustGuardAPI {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      const response = await fetch(url, { ...options, headers });
-      if (!response.ok) {
-        let errMessage = `HTTP ${response.status} ${response.statusText}`;
-        try {
-          const errData = await response.json();
-          if (errData.detail) errMessage = typeof errData.detail === 'string' ? errData.detail : JSON.stringify(errData.detail);
-          else if (errData.error) errMessage = errData.error;
-        } catch (_) {}
-        throw new Error(errMessage);
-      }
-      return await response.json();
+      const response = await fetch(url, {
+        ...options,
+        headers,
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      return await this.parseSafeResponse(response, endpoint);
     } catch (err) {
-      console.error(`[TrustGuard API] Error calling ${endpoint}:`, err);
+      clearTimeout(timer);
+      if (err.name === 'AbortError') {
+        throw new Error(`Analysis request timed out after ${timeoutMs / 1000}s. Processing took longer than expected.`);
+      }
+      if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('fetch failed'))) {
+        throw new Error(`TrustGuard AI local backend is not running at ${this.baseUrl}. Start the FastAPI server on port 8000 and try again.`);
+      }
       throw err;
     }
   }
@@ -84,7 +215,7 @@ class TrustGuardAPI {
     return this.request('/api/analyze/video', {
       method: 'POST',
       body: formData
-    });
+    }, 120000);
   }
 
   async analyzeAudio(file) {
